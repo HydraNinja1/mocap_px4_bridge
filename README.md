@@ -1,180 +1,123 @@
-# ROS2 SLAM PX4 Bridge
+# MoCap PX4 Bridge
 
-A collection of ROS 2 bridge nodes for integrating external localisation systems with PX4. The package provides utilities for converting SLAM, motion capture, tracker and IMU data into formats compatible with PX4's visual odometry interface, enabling indoor and outdoor autonomous navigation.
+`mocap_px4_bridge` is a ROS 2 package that converts motion-capture (MoCap) pose data from a VRPN/OptiTrack rigid body into the `px4_msgs/msg/VehicleOdometry` message format used by PX4.
 
-The package includes automatic calibration tools for transforming SLAM coordinates into the PX4 NED (North-East-Down) frame using GPS and IMU measurements.
+The package contains a single C++ ROS 2 node, `tracker_bridge`. It subscribes to a `geometry_msgs/msg/PoseStamped` topic, converts the position and orientation from the **FUR (Forward–Up–Right)** axes to a **local FRD (Forward–Right–Down)** reference frame, and republishes the converted data. Forwarding to PX4 is optional and **disabled by default**.
 
----
+## Requirements
 
-## Features
+- ROS 2 (e.g. Humble)
+- `rclcpp`
+- `geometry_msgs`
+- `px4_msgs` (compatible with the PX4 firmware and ROS 2 message definitions in use)
+- A running VRPN/OptiTrack pose publisher, such as `vrpn_mocap`, supplying `geometry_msgs/msg/PoseStamped`
+- `colcon` and an existing ROS 2 workspace for building
 
-* **DLIO FRD Bridge**
+## Topics
 
-  * Converts DLIO odometry into a Forward-Right-Down (FRD) frame.
-  * Publishes PX4-compatible `VehicleOdometry`.
+| Direction | Topic | Message type | Description |
+| --- | --- | --- | --- |
+| Subscribed | `/vrpn_mocap/Octane/pose` | `geometry_msgs/msg/PoseStamped` | Raw rigid-body pose (default topic) |
+| Published | `/vrpn_mocap/out/debug` | `px4_msgs/msg/VehicleOdometry` | Converted odometry, always published |
+| Published (optional) | `/fmu/in/vehicle_visual_odometry` | `px4_msgs/msg/VehicleOdometry` | Converted odometry forwarded to PX4 when `mocap_fusion=true` |
 
-* **DLIO NED Bridge**
+The node uses ROS 2 `SensorDataQoS` for its subscriber and publishers. The input topic changes with the `asset_name` parameter unless `mocap_topic` is explicitly overridden.
 
-  * Automatically estimates the rotation between the SLAM frame and the PX4 NED frame.
-  * Uses IMU orientation to initialise the transformation.
-  * Supports optional visual odometry fusion directly into PX4.
-  * Publishes:
+## Coordinate-frame conversion
 
-    * SLAM in NED
-    * SLAM in a user-defined map frame
-    * GPS Cartesian position for debugging
+The bridge **assumes** the incoming MoCap axes use FUR. Check the coordinate-system settings of your OptiTrack/VRPN installation: the code cannot determine the source frame automatically.
 
-* **Motion Capture Bridge**
+| Input MoCap axis (FUR) | Output local FRD axis |
+| --- | --- |
+| X: Forward | X: Forward |
+| Y: Up | Z: Down (negated) |
+| Z: Right | Y: Right |
 
-  * Converts motion capture poses into PX4 `VehicleOdometry`.
+**Position:**
 
-* **Tracker Bridge**
-
-  * Bridges external tracking systems into PX4-compatible messages.
-
-* **IMU Bridge**
-
-  * Converts external IMU messages into the coordinate conventions expected by PX4.
-
-* **Map Calibration Tool**
-
-  * Interactive utility for calibrating an outdoor map.
-  * Averages GPS measurements at two reference locations.
-  * Computes stable map origin parameters.
-  * Saves calibration directly to a ROS 2 parameter YAML file.
-
----
-
-## Package Structure
-
-```
-slam_px4_bridge/
-├── config/
-│   └── dlio_ned_bridge.yaml
-├── src/
-│   ├── dlio_frd_bridge.cpp
-│   ├── dlio_mocap_bridge.cpp
-│   ├── dlio_ned_bridge.cpp
-│   ├── imu_bridge.cpp
-│   ├── map_calibration.cpp
-│   └── tracker_bridge.cpp
-├── CMakeLists.txt
-└── package.xml
+```cpp
+x_frd = x_mocap;
+y_frd = z_mocap;
+z_frd = -y_mocap;
 ```
 
----
+**Orientation (quaternion):**
 
-## Dependencies
+```cpp
+qx_frd = qx_mocap;
+qy_frd = qz_mocap;
+qz_frd = -qy_mocap;
+qw_frd = qw_mocap;
+```
 
-* ROS 2 Humble
-* PX4 ROS 2 Interface (`px4_msgs`)
-* Eigen3
-* nav_msgs
-* geometry_msgs
-* sensor_msgs
-* rclcpp
+The output quaternion is stored in PX4's `(w, x, y, z)` order. The node sets `pose_frame = 2`, corresponding to PX4's `POSE_FRAME_FRD`: a **fixed local reference frame with an arbitrary heading**, not a body-fixed frame rotating with the vehicle. The transformation assumes the source pose and tracked rigid-body axis conventions are compatible with the stated mapping.
 
----
+## Parameters
 
-## Building
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `mocap_fusion` | `bool` | `false` | Also publish the converted message to PX4 |
+| `asset_name` | `string` | `Octane` | Tracked rigid-body name used to form the default input topic |
+| `mocap_topic` | `string` | `/vrpn_mocap/Octane/pose` | Input MoCap pose topic (derived from `asset_name` unless overridden) |
+| `mocap_bridged_topic` | `string` | `/vrpn_mocap/out/debug` | Always-on converted odometry output |
+| `fmu_in_topic` | `string` | `/fmu/in/vehicle_visual_odometry` | Optional PX4 external-odometry input |
 
-Clone the repository into your ROS 2 workspace:
+## Build
+
+Place this package in the `src` directory of a ROS 2 workspace, then build and source it:
 
 ```bash
-cd ~/ws/src
-git clone <repository_url>
-```
-
-Build the package:
-
-```bash
-cd ~/ws
-colcon build --packages-select slam_px4_bridge
+cd ~/ros2_ws
+colcon build --packages-select mocap_px4_bridge
 source install/setup.bash
 ```
 
----
+Make sure the ROS 2 installation and the workspace containing `px4_msgs` have been sourced before building, as applicable.
 
-## Map Calibration
+## Run
 
-Before running the outdoor SLAM bridge, generate a map calibration file.
+The examples below assume the package's CMake configuration installs the C++ executable as **`tracker_bridge`**. If your `CMakeLists.txt` uses a different executable name, substitute that name in `ros2 run`.
 
-Launch the calibration node:
-
-```bash
-ros2 run slam_px4_bridge map_calibration
-```
-
-The calibration process:
-
-1. Waits for a valid GPS fix.
-2. Prompts the user to position the vehicle at the bottom-left map corner.
-3. Averages GPS measurements for a configurable duration.
-4. Prompts the user to move to the top-left corner.
-5. Repeats the averaging process.
-6. Saves the resulting calibration to a ROS 2 YAML parameter file.
-
-Example output:
-
-```yaml
-/**:
-  ros__parameters:
-    map_bl_lat: 51.xxxxxxxxx
-    map_bl_lon: 0.xxxxxxxxx
-    map_bl_alt: xxx.xxx
-
-    map_tl_lat: 51.xxxxxxxxx
-    map_tl_lon: 0.xxxxxxxxx
-    map_tl_alt: xxx.xxx
-```
-
----
-
-## Running the NED Bridge
-
-Launch using the generated calibration file:
+### Debug output only (default)
 
 ```bash
-ros2 run slam_px4_bridge dlio_ned_bridge \
-    --ros-args \
-    --params-file config/dlio_ned_bridge.yaml
+ros2 run mocap_px4_bridge tracker_bridge
 ```
 
-During initialisation the bridge:
+This subscribes to `/vrpn_mocap/Octane/pose` and publishes the converted message to `/vrpn_mocap/out/debug`. It does **not** forward data to PX4.
 
-* Collects several seconds of SLAM and IMU data.
-* Estimates the SLAM → NED rotation.
-* Computes the map frame transformation.
-* Begins publishing transformed odometry.
+### Select a different MoCap rigid body
 
----
+```bash
+ros2 run mocap_px4_bridge tracker_bridge --ros-args -p asset_name:=Octopus
+```
 
-## Published Topics
+This changes the default input topic to `/vrpn_mocap/Octopus/pose`.
 
-Depending on configuration, the package publishes:
+### Enable forwarding to PX4
 
-* `/dlio/odom_node/odom_bridged`
-* `/dlio/odom_node/odom_bridged_ned`
-* `/dlio/odom_node/odom_bridged_map`
-* `/fmu/in/vehicle_visual_odometry`
-* `/fmu/out/gps_cartesian`
+```bash
+ros2 run mocap_px4_bridge tracker_bridge --ros-args \
+  -p asset_name:=Octane \
+  -p mocap_fusion:=true
+```
 
----
+When enabled, the node publishes both the debug topic and `/fmu/in/vehicle_visual_odometry`. The PX4 ROS 2/DDS connection must already be running and configured for the matching `px4_msgs` version.
 
-## Applications
+### Verify the output
 
-This package is intended for:
+```bash
+ros2 topic echo /vrpn_mocap/out/debug
+ros2 topic hz /vrpn_mocap/out/debug
+```
 
-* Outdoor LiDAR SLAM with PX4
-* Indoor motion capture integration
-* External visual odometry fusion
-* Autonomous UAV localisation
-* GPS-assisted SLAM initialisation
-* Research and development using PX4 and ROS 2
+To inspect the incoming pose:
 
----
+```bash
+ros2 topic echo /vrpn_mocap/Octane/pose
+```
 
-## License
+For PX4 message fields and external-vision configuration, see:
 
-Specify your chosen open-source license (MIT, BSD-3-Clause, Apache-2.0, etc.).
-# mocap_px4_bridge
+- [PX4 `VehicleOdometry` message](https://docs.px4.io/main/en/msg_docs/VehicleOdometry)
+- [PX4 external position estimation (MoCap/VIO)](https://docs.px4.io/main/en/ros/external_position_estimation)
