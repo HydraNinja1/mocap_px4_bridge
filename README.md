@@ -12,17 +12,24 @@ The package contains a single C++ ROS 2 node, `tracker_bridge`. It subscribes to
 - `px4_msgs`
 - `colcon` and an existing ROS 2 workspace for building
 
-## Build
+## Build PX4
 
 Place this package in the `src` directory of a ROS 2 workspace, then build and source it:
+
+```bash
+cd ws/src
+git clone https://github.com/PX4/px4_msgs.git
+colcon build --packages-select px4_msgs
+source install/setup.bash
+```
+
+## Build
 
 ```bash
 cd ~/ros2_ws
 colcon build --packages-select mocap_px4_bridge
 source install/setup.bash
 ```
-
-Make sure the ROS 2 installation and the workspace containing `px4_msgs` have been sourced before building, as applicable.
 
 ## Run
 
